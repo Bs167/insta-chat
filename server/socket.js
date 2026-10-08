@@ -1,40 +1,57 @@
 const { Server } = require('socket.io');
 
-const userSocketMap = new Map();
+const onlineUsers = new Map();
 let io;
 
-const initSocket = (server) => {
-  io = new Server(server, {
-    cors: { origin: '*' },
+const initSocket = (httpServer) => {
+  io = new Server(httpServer, {
+    cors: { origin: '*', methods: ['GET', 'POST'] },
   });
 
   io.on('connection', (socket) => {
     const userId = socket.handshake.query.userId;
     if (userId && userId !== 'undefined') {
-      userSocketMap.set(userId, socket.id);
+      onlineUsers.set(userId, socket.id);
       console.log(`User connected: ${userId} (${socket.id})`);
     }
 
-    io.emit('getOnlineUsers', Array.from(userSocketMap.keys()));
+    io.emit('getOnlineUsers', Array.from(onlineUsers.keys()));
 
-    // 1. Join a specific chat room
+    // 1. Join room
     socket.on('joinChat', (conversationId) => {
-      socket.join(conversationId);
-      console.log(`Socket ${socket.id} joined conversation room: ${conversationId}`);
+      const room = String(conversationId);
+      socket.join(room);
+      console.log(`[Socket] ${socket.id} joined room: ${room}`);
     });
 
-    // 2. Broadcast message instantly to everyone in that conversation room
-    socket.on('sendMessage', (messageData) => {
-      if (messageData.conversationId) {
-        socket.to(messageData.conversationId).emit('newMessage', messageData);
-        console.log(`Message broadcasted to room ${messageData.conversationId}:`, messageData.text);
+    // 2. Relay message
+    socket.on('sendMessage', (messagePayload) => {
+      if (messagePayload?.conversationId) {
+        socket.to(String(messagePayload.conversationId)).emit('newMessage', messagePayload);
       }
+    });
+
+    // 3. Typing indicators
+    socket.on('start_typing', (conversationId) => {
+      console.log(`[Socket] Typing started in room: ${conversationId}`);
+      socket.to(String(conversationId)).emit('partner_typing');
+    });
+
+    socket.on('stop_typing', (conversationId) => {
+      console.log(`[Socket] Typing stopped in room: ${conversationId}`);
+      socket.to(String(conversationId)).emit('partner_idle');
+    });
+
+    // 4. Read receipts
+    socket.on('mark_seen', (conversationId) => {
+      console.log(`[Socket] Messages marked seen in room: ${conversationId}`);
+      socket.to(String(conversationId)).emit('messages_seen');
     });
 
     socket.on('disconnect', () => {
       if (userId) {
-        userSocketMap.delete(userId);
-        io.emit('getOnlineUsers', Array.from(userSocketMap.keys()));
+        onlineUsers.delete(userId);
+        io.emit('getOnlineUsers', Array.from(onlineUsers.keys()));
       }
     });
   });
