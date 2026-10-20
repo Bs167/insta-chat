@@ -11,7 +11,10 @@ const initSocket = (httpServer) => {
 
   io.on('connection', (socket) => {
     const userId = socket.handshake.query.userId;
-
+    // Inside io.on('connection', (socket) => { ... })
+    socket.on('react_message', ({ conversationId, message }) => {
+    io.to(conversationId).emit('message_reacted', message);
+    });
     if (userId && userId !== 'undefined') {
       if (!userSockets.has(userId)) {
         userSockets.set(userId, new Set());

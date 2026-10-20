@@ -1,184 +1,189 @@
 const express = require('express');
 const router = express.Router();
-const mongoose = require('mongoose');
-const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
+const Conversation = require('../models/Conversation');
 
-// 1. Get conversation details (includes group admins and participants)
+// Fetch conversation metadata
 router.get('/details/:conversationId', async (req, res) => {
   try {
-    const { conversationId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(conversationId)) {
-      return res.status(404).json({ error: 'Invalid conversation ID' });
+    const conv = await Conversation.findById(req.params.conversationId)
+      .populate('participants', 'name username avatar bio')
+      .populate('admins', 'name username avatar');
+    if (!conv) {
+      return res.status(404).json({ error: 'Conversation not found' });
     }
+    res.json(conv);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    const conversation = await Conversation.findById(conversationId)
-      .populate('participants', 'name username avatar clerkId bio')
-      .populate('admins', 'name username avatar clerkId');
+// Fetch all conversations for a user
+router.get('/conversations/:userId', async (req, res) => {
+  try {
+    const conversations = await Conversation.find({
+      participants: req.params.userId,
+    })
+      .populate('participants', 'name username avatar')
+      .populate('admins', 'name username')
+      .populate('lastMessage.sender', 'name username')
+      .sort({ updatedAt: -1 });
 
-    if (!conversation) {
+    res.json(conversations);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fetch all messages in a conversation (with populated replyTo and reactions)
+router.get('/:conversationId', async (req, res) => {
+  try {
+    const messages = await Message.find({
+      conversationId: req.params.conversationId,
+    })
+      .populate('sender', 'name username avatar')
+      .populate({
+        path: 'replyTo',
+        populate: { path: 'sender', select: 'name username' },
+      })
+      .populate('reactions.user', 'name username avatar')
+      .sort({ createdAt: 1 });
+
+    res.json(messages);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Mark messages as seen
+router.put('/mark-seen/:conversationId', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    await Message.updateMany(
+      {
+        conversationId: req.params.conversationId,
+        sender: { $ne: userId },
+        seen: false,
+      },
+      { $set: { seen: true } }
+    );
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Send a message (with optional replyTo)
+router.post('/send', async (req, res) => {
+  try {
+    const { conversationId, sender, recipient, text, mediaUrl, replyTo } = req.body;
+
+    const conv = await Conversation.findById(conversationId);
+    if (!conv) {
       return res.status(404).json({ error: 'Conversation not found' });
     }
 
-    res.status(200).json(conversation);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 2. Get all conversations (both 1-on-1 and Groups) for a user
-router.get('/conversations/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(200).json([]);
-    }
-
-    const conversations = await Conversation.find({ participants: userId })
-      .populate('participants', 'name username avatar clerkId')
-      .populate('admins', 'name username avatar clerkId')
-      .populate('lastMessage')
-      .sort({ updatedAt: -1 });
-
-    res.status(200).json(conversations);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 3. Get messages for a specific conversation
-router.get('/:conversationId', async (req, res) => {
-  try {
-    const { conversationId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(conversationId)) {
-      return res.status(200).json([]);
-    }
-
-    const messages = await Message.find({ conversationId })
-      .populate('sender', 'name username avatar clerkId')
-      .populate('recipient', 'name username avatar clerkId')
-      .sort({ createdAt: 1 });
-
-    res.status(200).json(messages);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 4. Mark messages as seen
-router.put('/mark-seen/:conversationId', async (req, res) => {
-  try {
-    const { conversationId } = req.params;
-    const { readerId } = req.body;
-
-    if (conversationId && readerId && mongoose.Types.ObjectId.isValid(conversationId)) {
-      await Message.updateMany(
-        { conversationId, sender: { $ne: readerId }, seen: false },
-        { $set: { seen: true } }
-      );
-    }
-
-    res.status(200).json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 5. Send message (supports both 1-on-1 and Group chats)
-router.post('/send', async (req, res) => {
-  try {
-    const { conversationId, senderId, recipientId, text, mediaUrl } = req.body;
-
-    let conversation = null;
-
-    if (conversationId && mongoose.Types.ObjectId.isValid(conversationId)) {
-      conversation = await Conversation.findById(conversationId);
-    }
-
-    if (!conversation && senderId && recipientId) {
-      conversation = await Conversation.findOne({
-        isGroup: false,
-        participants: { $all: [senderId, recipientId] },
-      });
-
-      if (!conversation) {
-        conversation = await Conversation.create({
-          participants: [senderId, recipientId],
-          isGroup: false,
-        });
+    if (conv.isGroup && conv.onlyAdminsCanMessage) {
+      const isAdmin = conv.admins.some((a) => a.toString() === sender.toString());
+      if (!isAdmin) {
+        return res.status(403).json({ error: 'Only admins can send messages in this group' });
       }
     }
 
-    if (!conversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    // Check if group is restricted to admins only
-    if (
-      conversation.isGroup &&
-      conversation.onlyAdminsCanMessage &&
-      !conversation.admins.some((a) => String(a) === String(senderId))
-    ) {
-      return res.status(403).json({ error: 'Only admins can send messages in this group' });
-    }
-
-    const newMessage = await Message.create({
-      conversationId: conversation._id,
-      sender: senderId,
-      recipient: conversation.isGroup ? null : recipientId || null,
+    const message = new Message({
+      conversationId,
+      sender,
+      recipient: conv.isGroup ? null : recipient,
       text: text || '',
       mediaUrl: mediaUrl || '',
+      replyTo: replyTo || null,
       seen: false,
     });
+    await message.save();
 
-    conversation.lastMessage = newMessage._id;
-    await conversation.save();
+    conv.lastMessage = {
+      text: text || (mediaUrl ? '📷 Photo' : ''),
+      sender,
+      createdAt: new Date(),
+    };
+    await conv.save();
 
-    await newMessage.populate('sender', 'name username avatar clerkId');
-    if (newMessage.recipient) {
-      await newMessage.populate('recipient', 'name username avatar clerkId');
-    }
+    const populatedMessage = await Message.findById(message._id)
+      .populate('sender', 'name username avatar')
+      .populate({
+        path: 'replyTo',
+        populate: { path: 'sender', select: 'name username' },
+      });
 
-    res.status(201).json({ message: newMessage, conversationId: conversation._id });
+    res.status(201).json(populatedMessage);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// 6. Create a new Group Chat
-router.post('/group/create', async (req, res) => {
+// Toggle or update an emoji reaction on a message
+router.put('/react/:messageId', async (req, res) => {
   try {
-    const { groupName, groupDescription, groupAvatar, creatorId, memberIds } = req.body;
-
-    if (!groupName || !creatorId || !Array.isArray(memberIds) || memberIds.length === 0) {
-      return res.status(400).json({ error: 'Group name and at least 1 member are required' });
+    const { userId, emoji } = req.body;
+    const message = await Message.findById(req.params.messageId);
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found' });
     }
 
-    const allParticipants = Array.from(new Set([creatorId, ...memberIds]));
+    const existingIdx = message.reactions.findIndex(
+      (r) => r.user.toString() === userId.toString()
+    );
 
-    const group = await Conversation.create({
+    if (existingIdx > -1) {
+      if (message.reactions[existingIdx].emoji === emoji) {
+        // Tapping same emoji removes reaction
+        message.reactions.splice(existingIdx, 1);
+      } else {
+        // Change to new emoji
+        message.reactions[existingIdx].emoji = emoji;
+      }
+    } else {
+      // Add reaction
+      message.reactions.push({ user: userId, emoji });
+    }
+
+    await message.save();
+
+    const updated = await Message.findById(message._id)
+      .populate('sender', 'name username avatar')
+      .populate({
+        path: 'replyTo',
+        populate: { path: 'sender', select: 'name username' },
+      })
+      .populate('reactions.user', 'name username avatar');
+
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create Group Conversation
+router.post('/group/create', async (req, res) => {
+  try {
+    const { creatorId, participantIds, groupName, groupDescription, groupAvatar } = req.body;
+    const allMembers = Array.from(new Set([creatorId, ...(participantIds || [])]));
+
+    const groupConv = new Conversation({
       isGroup: true,
       groupName: groupName.trim(),
-      groupDescription: groupDescription || '',
+      groupDescription: (groupDescription || '').trim(),
       groupAvatar: groupAvatar || '',
-      participants: allParticipants,
+      participants: allMembers,
       admins: [creatorId],
+      onlyAdminsCanMessage: false,
     });
 
-    // Create initial system greeting message
-    const firstMsg = await Message.create({
-      conversationId: group._id,
-      sender: creatorId,
-      text: `Created group "${groupName.trim()}"`,
-    });
+    await groupConv.save();
 
-    group.lastMessage = firstMsg._id;
-    await group.save();
-
-    const populated = await Conversation.findById(group._id)
-      .populate('participants', 'name username avatar clerkId')
-      .populate('admins', 'name username avatar clerkId')
-      .populate('lastMessage');
+    const populated = await Conversation.findById(groupConv._id)
+      .populate('participants', 'name username avatar')
+      .populate('admins', 'name username');
 
     res.status(201).json(populated);
   } catch (error) {
@@ -186,85 +191,70 @@ router.post('/group/create', async (req, res) => {
   }
 });
 
-// 7. Update Group Info & Admin Settings (Name, Description, Avatar, OnlyAdminsCanMessage)
+// Update group settings
 router.put('/group/:conversationId/settings', async (req, res) => {
   try {
-    const { conversationId } = req.params;
-    const { userId, groupName, groupDescription, groupAvatar, onlyAdminsCanMessage } = req.body;
-
-    const group = await Conversation.findById(conversationId);
-    if (!group || !group.isGroup) {
-      return res.status(404).json({ error: 'Group not found' });
+    const { userId, onlyAdminsCanMessage, groupName, groupDescription } = req.body;
+    const conv = await Conversation.findById(req.params.conversationId);
+    if (!conv || !conv.isGroup) {
+      return res.status(404).json({ error: 'Group conversation not found' });
     }
 
-    const isAdmin = group.admins.some((a) => String(a) === String(userId));
+    const isAdmin = conv.admins.some((a) => a.toString() === userId.toString());
     if (!isAdmin) {
-      return res.status(403).json({ error: 'Only group admins can update group settings' });
+      return res.status(403).json({ error: 'Only admins can modify group settings' });
     }
 
-    if (groupName !== undefined) group.groupName = groupName;
-    if (groupDescription !== undefined) group.groupDescription = groupDescription;
-    if (groupAvatar !== undefined) group.groupAvatar = groupAvatar;
-    if (onlyAdminsCanMessage !== undefined) group.onlyAdminsCanMessage = onlyAdminsCanMessage;
+    if (onlyAdminsCanMessage !== undefined) conv.onlyAdminsCanMessage = onlyAdminsCanMessage;
+    if (groupName !== undefined) conv.groupName = groupName.trim();
+    if (groupDescription !== undefined) conv.groupDescription = groupDescription.trim();
 
-    await group.save();
-
-    const updated = await Conversation.findById(conversationId)
-      .populate('participants', 'name username avatar clerkId')
-      .populate('admins', 'name username avatar clerkId');
-
-    res.status(200).json(updated);
+    await conv.save();
+    res.json(conv);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// 8. Manage Group Members (Add, Remove, Make Admin, or Leave Group)
+// Add or remove members/admins or leave group
 router.put('/group/:conversationId/members', async (req, res) => {
   try {
-    const { conversationId } = req.params;
-    const { actorId, targetUserId, action } = req.body; // action: 'add' | 'remove' | 'make_admin' | 'leave'
-
-    const group = await Conversation.findById(conversationId);
-    if (!group || !group.isGroup) {
-      return res.status(404).json({ error: 'Group not found' });
+    const { userId, action, targetUserId } = req.body;
+    const conv = await Conversation.findById(req.params.conversationId);
+    if (!conv || !conv.isGroup) {
+      return res.status(404).json({ error: 'Group conversation not found' });
     }
 
-    const isAdmin = group.admins.some((a) => String(a) === String(actorId));
+    const isAdmin = conv.admins.some((a) => a.toString() === userId.toString());
 
     if (action === 'leave') {
-      group.participants = group.participants.filter((p) => String(p) !== String(actorId));
-      group.admins = group.admins.filter((a) => String(a) !== String(actorId));
-      // If no admins remain but members exist, promote the first member
-      if (group.admins.length === 0 && group.participants.length > 0) {
-        group.admins.push(group.participants[0]);
+      conv.participants = conv.participants.filter((p) => p.toString() !== userId.toString());
+      conv.admins = conv.admins.filter((a) => a.toString() !== userId.toString());
+      if (conv.admins.length === 0 && conv.participants.length > 0) {
+        conv.admins.push(conv.participants[0]);
       }
-    } else {
-      if (!isAdmin) {
-        return res.status(403).json({ error: 'Only admins can manage members' });
+    } else if (action === 'add') {
+      if (!conv.participants.some((p) => p.toString() === targetUserId.toString())) {
+        conv.participants.push(targetUserId);
       }
-
-      if (action === 'add') {
-        if (!group.participants.some((p) => String(p) === String(targetUserId))) {
-          group.participants.push(targetUserId);
-        }
-      } else if (action === 'remove') {
-        group.participants = group.participants.filter((p) => String(p) !== String(targetUserId));
-        group.admins = group.admins.filter((a) => String(a) !== String(targetUserId));
-      } else if (action === 'make_admin') {
-        if (!group.admins.some((a) => String(a) === String(targetUserId))) {
-          group.admins.push(targetUserId);
-        }
+    } else if (action === 'remove') {
+      if (!isAdmin) return res.status(403).json({ error: 'Only admins can remove members' });
+      conv.participants = conv.participants.filter((p) => p.toString() !== targetUserId.toString());
+      conv.admins = conv.admins.filter((a) => a.toString() !== targetUserId.toString());
+    } else if (action === 'make_admin') {
+      if (!isAdmin) return res.status(403).json({ error: 'Only admins can promote members' });
+      if (!conv.admins.some((a) => a.toString() === targetUserId.toString())) {
+        conv.admins.push(targetUserId);
       }
     }
 
-    await group.save();
+    await conv.save();
 
-    const updated = await Conversation.findById(conversationId)
-      .populate('participants', 'name username avatar clerkId')
-      .populate('admins', 'name username avatar clerkId');
+    const populated = await Conversation.findById(conv._id)
+      .populate('participants', 'name username avatar')
+      .populate('admins', 'name username avatar');
 
-    res.status(200).json(updated);
+    res.json(populated);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

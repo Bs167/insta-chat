@@ -6,7 +6,6 @@ const messageSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Conversation',
       required: true,
-      index: true,
     },
     sender: {
       type: mongoose.Schema.Types.ObjectId,
@@ -22,7 +21,6 @@ const messageSchema = new mongoose.Schema(
     text: {
       type: String,
       default: '',
-      trim: true,
     },
     mediaUrl: {
       type: String,
@@ -32,6 +30,24 @@ const messageSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    replyTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Message',
+      default: null,
+    },
+    reactions: [
+      {
+        user: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+          required: true,
+        },
+        emoji: {
+          type: String,
+          required: true,
+        },
+      },
+    ],
   },
   { timestamps: true }
 );
