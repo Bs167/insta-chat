@@ -9,6 +9,34 @@ const conversationSchema = new mongoose.Schema(
         required: true,
       },
     ],
+    isGroup: {
+      type: Boolean,
+      default: false,
+    },
+    groupName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    groupDescription: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    groupAvatar: {
+      type: String,
+      default: '',
+    },
+    admins: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    ],
+    onlyAdminsCanMessage: {
+      type: Boolean,
+      default: false,
+    },
     lastMessage: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Message',
