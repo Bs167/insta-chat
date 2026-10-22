@@ -15,6 +15,13 @@ const initSocket = (httpServer) => {
     socket.on('react_message', ({ conversationId, message }) => {
     io.to(conversationId).emit('message_reacted', message);
     });
+    socket.on('react_message', ({ conversationId, message }) => {
+    io.to(conversationId).emit('message_reacted', message);
+    });
+
+    socket.on('delete_message', ({ conversationId, message }) => {
+    io.to(conversationId).emit('message_deleted', message);
+    });
     if (userId && userId !== 'undefined') {
       if (!userSockets.has(userId)) {
         userSockets.set(userId, new Set());

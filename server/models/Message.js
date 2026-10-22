@@ -26,7 +26,16 @@ const messageSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    mediaType: {
+      type: String,
+      enum: ['none', 'image', 'video', 'audio'],
+      default: 'none',
+    },
     seen: {
+      type: Boolean,
+      default: false,
+    },
+    isDeleted: {
       type: Boolean,
       default: false,
     },
